@@ -1,72 +1,97 @@
 from pyqtgraph.Qt import QtGui, QtCore
 import pyqtgraph
 import httplib
-import csv
+import json
 import numpy
 from datetime import datetime
 
 
-def seconds(dt):
-  return int((dt-datetime(1970, 1, 1)).total_seconds())
+class Exchange(object):
+  BITSTAMP = 'Bitstamp'
 
 
-def fetch_data(start=0):
-  conn = httplib.HTTPConnection('api.bitcoincharts.com')
-  url = '/v1/trades.csv?symbol=bitstampUSD'
-  if start > 0:
-    url += '&start=' + str(int(start))
+class Currency(object):
+  USD = 'usd'
+
+
+class Term(object):
+  MIN10 = '10min'
+  HOUR = '1h'
+  DAY = '24h'
+  WEEK = '1w'
+  MONTH = '1m'
+  MONTH3 = '3m'
+  MONTH6 = '6m'
+  YEAR = '1y'
+  YEAR2 = '2y'
+
+
+def fetch_data(exchange=Exchange.BITSTAMP,
+               currency=Currency.USD,
+               term=Term.WEEK):
+  conn = httplib.HTTPConnection('bitcoinstat.org')
+  url = '/api_v3/chart/' + \
+        '?exchange=' + exchange + \
+        '&currency=' + currency + \
+        '&term=' + term
   print 'Fetching', url, '...'
   conn.request('GET', url)
   res = conn.getresponse()
-  data = res.read()
-  lines = data.splitlines(True)
-  data = []
-  for row in csv.reader(lines):
-    data.append([int(row[0]), float(row[1])])
-  print 'Fetched', len(data), 'data points'
-  print data[0], data[-1]
-  return numpy.array(data)
+  data = json.load(res)
+  return data['data']
+
+"""
+DATA from bitcoinstat.org
+{
+  "request": "chart",
+  "code": 200,
+  "status": "Success",
+  "data": {
+    "currency": "usd",
+    "source": "trades",
+    "exchange": "Bitstamp",
+    "info": {
+      "sell": "377.26",
+      "volume": "9372.43",
+      "updated": "2014-11-19 22:22:11",
+      "buy": "376.49",
+      "last": "377.26",
+      "timestamp": "1416435731",
+      "high": "453.92",
+      "low": "369",
+      "change": "-43.32"
+    },
+    "chart": [
+      {
+        "high": 386.39,
+        "timestamp": 1416435824,
+        "price": 377.26,
+        "low": 371.7,
+        "market": 0
+      },
+      ...
+    ]
+  }
+}
+"""
 
 
-def fetch_all():
-  conn = httplib.HTTPConnection('api.bitcoincharts.com')
-  url = '/v1/csv/bitstampUSD.csv.gz'
-  print 'Fetching', url, '...'
-  conn.request('GET', url)
-  res = conn.getresponse()
-  data = res.read()
-  # TODO: decode gzip (33MB)
-  print data
-  # data = []
-  # for row in csv.reader(lines):
-  #   data.append([int(row[0]), float(row[1])])
-  # print 'Fetched', len(data), 'data points'
-  # return numpy.array(data)
-
-  # data = fetch_data(seconds(datetime.now()))
-  # print data
-  # last = data[len(data)-1][0]
-  # while last > seconds(since):
-  #   cur = fetch_data(last)
-  #   print cur
-  #   data = numpy.concatenate((data, cur), axis=0)
-  #   last = data[len(data)-1][0]
-  # return data
+def get_prices(data):
+  return [val['price'] for val in data['chart']]
 
 
-def segment(data, duration):
-  last = data[0][0]
-  segments = []
-  seg = []
-  for i in range(len(data)):
-    stamp = data[i][0]
-    price = data[i][1]
-    seg.append(price)
-    if abs(stamp - last) > duration:
-      segments.append([stamp, sum(seg)/len(seg)])
-      seg = []
-      last = stamp
-  return numpy.array(segments)
+def get_timestamps(data):
+  return [val['timestamp'] for val in data['chart']]
+
+
+def sma(data, window=20):
+  averages = []
+  for i in reversed(range(len(data))):
+    if i >= window:
+      averages.insert(0, sum(data[i-window:i])/window)
+    else:
+      averages.insert(0, averages[0])
+  return averages
 
 
 class DateAxis(pyqtgraph.AxisItem):
@@ -91,6 +116,49 @@ class DateAxis(pyqtgraph.AxisItem):
           ticks.append('')
     return ticks
 
+
+def plot_preset_month(p):
+  data = fetch_data(term=Term.MONTH)
+  timestamps = get_timestamps(data)
+  prices = get_prices(data)
+  p.plot(timestamps, prices, name='prices',
+         pen={'color': 'a0a0a0', 'width': 2})
+  p.plot(timestamps, sma(prices, window=15), name='sma15',
+         pen={'color': 'ff0000', 'width': 2})
+  p.plot(timestamps, sma(prices, window=50), name='sma50',
+         pen={'color': 'ffff00', 'width': 2})
+  p.plot(timestamps, sma(prices, window=100), name='sma100',
+         pen={'color': '00ff00', 'width': 2})
+
+
+def plot_preset_week(p):
+  data = fetch_data(term=Term.WEEK)
+  timestamps = get_timestamps(data)
+  prices = get_prices(data)
+  p.plot(timestamps, prices, name='prices',
+         pen={'color': 'a0a0a0', 'width': 2})
+  p.plot(timestamps, sma(prices, window=5), name='sma5',
+         pen={'color': 'ff0000', 'width': 2})
+  p.plot(timestamps, sma(prices, window=20), name='sma20',
+         pen={'color': 'ffff00', 'width': 2})
+  p.plot(timestamps, sma(prices, window=50), name='sma50',
+         pen={'color': '00ff00', 'width': 2})
+
+
+def plot_preset_day(p):
+  data = fetch_data(term=Term.DAY)
+  timestamps = get_timestamps(data)
+  prices = get_prices(data)
+  p.plot(timestamps, prices, name='prices',
+         pen={'color': 'a0a0a0', 'width': 2})
+  p.plot(timestamps, sma(prices, window=15), name='sma15',
+         pen={'color': 'ff0000', 'width': 2})
+  p.plot(timestamps, sma(prices, window=50), name='sma50',
+         pen={'color': 'ffff00', 'width': 2})
+  p.plot(timestamps, sma(prices, window=100), name='sma100',
+         pen={'color': '00ff00', 'width': 2})
+
+
 if __name__ == '__main__':
   # Enable antialiasing for prettier plots
   pyqtgraph.setConfigOptions(antialias=True)
@@ -102,30 +170,11 @@ if __name__ == '__main__':
   p.show()
   p.resize(1000, 600)
   p.setWindowTitle('Bitstamp market data')
+  p.addLegend(offset=(800, 30))
 
-  btc_plot = p.plot()
-  seg_plot = p.plot(pen=pyqtgraph.mkPen('fff', width=2))
-
-  def update(btc_plot, seg_plot):
-    # TODO: calculate in separate thread
-    # data = fetch_data(1416075331)
-    data = fetch_data(1410000000)
-    temp = fetch_data(1415912984)
-    data = numpy.concatenate((data, temp), axis=0)
-    temp = fetch_data(1416046133)
-    data = numpy.concatenate((data, temp), axis=0)
-    temp = fetch_data(1416246762)
-    data = numpy.concatenate((data, temp), axis=0)
-    temp = fetch_data(1416275152)  # ..
-    data = numpy.concatenate((data, temp), axis=0)
-    # TODO: -> fetch_all
-    # segments = segment(data, 1800)
-    btc_plot.setData(data)
-    # seg_plot.setData(segments)
+  plot_preset_month(p)
 
   # timer = QtCore.QTimer()
   # timer.timeout.connect(lambda: update(btc_plot, seg_plot))
   # timer.start(10000)
-  update(btc_plot, seg_plot)
-
   QtGui.QApplication.instance().exec_()
