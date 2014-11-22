@@ -1,18 +1,15 @@
-from pyqtgraph.Qt import QtGui, QtCore
+from pyqtgraph.Qt import QtGui
 import pyqtgraph
 import httplib
 import json
-import numpy
 from datetime import datetime
-
+import operator
 
 class Exchange(object):
   BITSTAMP = 'Bitstamp'
 
-
 class Currency(object):
   USD = 'usd'
-
 
 class Term(object):
   MIN10 = '10min'
@@ -25,10 +22,9 @@ class Term(object):
   YEAR = '1y'
   YEAR2 = '2y'
 
-
-def fetch_data(exchange=Exchange.BITSTAMP,
-               currency=Currency.USD,
-               term=Term.WEEK):
+def fetch_chart(exchange=Exchange.BITSTAMP,
+                currency=Currency.USD,
+                term=Term.WEEK):
   conn = httplib.HTTPConnection('bitcoinstat.org')
   url = '/api_v3/chart/' + \
         '?exchange=' + exchange + \
@@ -75,13 +71,66 @@ DATA from bitcoinstat.org
 }
 """
 
-
-def get_prices(data):
+def chart_prices(data):
   return [val['price'] for val in data['chart']]
 
-
-def get_timestamps(data):
+def chart_timestamps(data):
   return [val['timestamp'] for val in data['chart']]
+
+def fetch_trades(exchange=Exchange.BITSTAMP,
+                 currency=Currency.USD,
+                 since=1416000000):
+  conn = httplib.HTTPConnection('bitcoinstat.org')
+  url = '/api_v3/trades/' + \
+        '?exchanges=' + exchange + \
+        '&currency=' + currency + \
+        '&since=' + str(since)
+  print 'Fetching', url, '...'
+  conn.request('GET', url)
+  res = conn.getresponse()
+  data = json.load(res)
+  return data['trades']
+
+MAX_TRADES = 5000
+
+def fetch_all_trades(exchange=Exchange.BITSTAMP,
+                     currency=Currency.USD,
+                     since=1416000000):
+  data = fetch_trades(exchange, currency, since)
+  i = 1
+  while len(data) == MAX_TRADES*1:
+    last = int(data[-1]['timestamp'])
+    data = fetch_trades(exchange, currency, last) + data
+    i += 1
+    print len(data), data[0]['timestamp'], data[-1]['timestamp']
+  return data
+
+"""
+TRADES DATA
+{
+    "count": "5000",
+    "status": "Success",
+    "code": 200,
+    "last": "1416515624",
+    "request": "trades",
+    "trades": [
+      {
+          "currency": "usd",
+          "price": "354.95",
+          "amount": "0.028173",
+          "timestamp": "1416482199",
+          "exchange": "Bitstamp"
+      },
+      ...
+    ]
+}
+"""
+
+def trade_timestamps(data):
+  return [int(val['timestamp']) for val in data]
+
+def trade_prices(data):
+  return [float(val['price']) for val in data]
 
 
 def sma(data, window=20):
@@ -93,6 +142,14 @@ def sma(data, window=20):
       averages.insert(0, averages[0])
   return averages
 
+def ema(data, window=20):
+  averages = sma(data, window)
+  if window > 1:
+    mul = 2.0 / (window + 1)
+    for i in range(len(averages)):
+      if i >= window:
+        averages[i] = data[i] * mul + averages[i-1] * (1-mul)
+  return averages
 
 class DateAxis(pyqtgraph.AxisItem):
   def tickStrings(self, values, scale, spacing):
@@ -116,11 +173,10 @@ class DateAxis(pyqtgraph.AxisItem):
           ticks.append('')
     return ticks
 
-
 def plot_preset_month(p):
-  data = fetch_data(term=Term.MONTH)
-  timestamps = get_timestamps(data)
-  prices = get_prices(data)
+  data = fetch_chart(term=Term.MONTH)
+  timestamps = chart_timestamps(data)
+  prices = chart_prices(data)
   p.plot(timestamps, prices, name='prices',
          pen={'color': 'a0a0a0', 'width': 2})
   p.plot(timestamps, sma(prices, window=15), name='sma15',
@@ -129,51 +185,79 @@ def plot_preset_month(p):
          pen={'color': 'ffff00', 'width': 2})
   p.plot(timestamps, sma(prices, window=100), name='sma100',
          pen={'color': '00ff00', 'width': 2})
-
+  return timestamps, prices
 
 def plot_preset_week(p):
-  data = fetch_data(term=Term.WEEK)
-  timestamps = get_timestamps(data)
-  prices = get_prices(data)
+  data = fetch_chart(term=Term.WEEK)
+  timestamps = chart_timestamps(data)
+  prices = chart_prices(data)
+
+  ema12 = ema(prices, window=12)
+  ema26 = ema(prices, window=26)
+
   p.plot(timestamps, prices, name='prices',
          pen={'color': 'a0a0a0', 'width': 2})
-  p.plot(timestamps, sma(prices, window=5), name='sma5',
+  p.plot(timestamps, ema12, name='ema12',
          pen={'color': 'ff0000', 'width': 2})
-  p.plot(timestamps, sma(prices, window=20), name='sma20',
+  p.plot(timestamps, ema26, name='ema26',
          pen={'color': 'ffff00', 'width': 2})
   p.plot(timestamps, sma(prices, window=50), name='sma50',
          pen={'color': '00ff00', 'width': 2})
-
+  return timestamps, prices
 
 def plot_preset_day(p):
-  data = fetch_data(term=Term.DAY)
-  timestamps = get_timestamps(data)
-  prices = get_prices(data)
+  data = fetch_chart(term=Term.DAY)
+  timestamps = chart_timestamps(data)
+  prices = chart_prices(data)
   p.plot(timestamps, prices, name='prices',
          pen={'color': 'a0a0a0', 'width': 2})
   p.plot(timestamps, sma(prices, window=15), name='sma15',
          pen={'color': 'ff0000', 'width': 2})
-  p.plot(timestamps, sma(prices, window=50), name='sma50',
+  p.plot(timestamps, sma(prices, window=30), name='sma30',
          pen={'color': 'ffff00', 'width': 2})
   p.plot(timestamps, sma(prices, window=100), name='sma100',
          pen={'color': '00ff00', 'width': 2})
+  return timestamps, prices
 
+def plot_macd(p, timestamps, prices):
+  ema12 = ema(prices, window=12)
+  ema26 = ema(prices, window=26)
+  macd1 = map(operator.sub, ema12, ema26)
+  macd2 = ema(macd1, window=9)
+  p.plot(timestamps, macd1, name='macd',
+         pen={'color': 'c0c0c0', 'width': 2})
+  p.plot(timestamps, macd2, name='macd_trigger',
+         pen={'color': 'ffff00', 'width': 2})
 
 if __name__ == '__main__':
   # Enable antialiasing for prettier plots
   pyqtgraph.setConfigOptions(antialias=True)
 
-  app = pyqtgraph.mkQApp()
+  win = pyqtgraph.GraphicsWindow(title="Bitstamp market analysis")
+  win.resize(1000, 800)
+
   axis = DateAxis(orientation='bottom')
-  vb = pyqtgraph.ViewBox()
-  p = pyqtgraph.PlotWidget(viewBox=vb, axisItems={'bottom': axis})
+  p = win.addPlot(axisItems={'bottom': axis})
   p.show()
-  p.resize(1000, 600)
-  p.setWindowTitle('Bitstamp market data')
   p.addLegend(offset=(800, 30))
+  timestamps, prices = plot_preset_week(p)
 
-  plot_preset_month(p)
+  win.nextRow()
 
+  axis2 = DateAxis(orientation='bottom')
+  p2 = win.addPlot(axisItems={'bottom': axis2})
+  p2.show()
+  plot_macd(p2, timestamps, prices)
+
+
+  # - Fetch raw data
+  # data = fetch_all_trades()
+  # timestamps = trade_timestamps(data)
+  # prices = trade_prices(data)
+  # p.plot(timestamps, prices, name='prices',
+  #        pen={'color': 'a0a0a0', 'width': 2})
+
+  # - Register an update timer
   # timer = QtCore.QTimer()
   # timer.timeout.connect(lambda: update(btc_plot, seg_plot))
   # timer.start(10000)
